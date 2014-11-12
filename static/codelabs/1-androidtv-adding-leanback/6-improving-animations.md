@@ -26,8 +26,19 @@ Under `fastlane` Create a class <code>BackgroundHelper</code> which we are going
 	    private static long BACKGROUND_UPDATE_DELAY = 200;
 		
 	    private final Handler mHandler = new Handler();
+	    
+	    private final Runnable mUpdateBackgroundAction = new Runnable() {
+	        @Override
+	        public void run() {
+	            if (mBackgroundURL != null) {
+	                updateBackground(mBackgroundURL);
+	            }
+	        }
+	    };
+
 		
 	    private Activity mActivity;
+	    private BackgroundManager mBackgroundManager;
 	    private DisplayMetrics mMetrics;
 	    private Timer mBackgroundTimer;
 	    private String mBackgroundURL;
@@ -97,21 +108,27 @@ The interface <a href="https://square.github.io/picasso/javadoc/com/squareup/pic
 We attach the <a href="http://developer.android.com/reference/android/view/Window.html"><code>Window</code></a> of the current activity to the <code>BackgroundManager</code> and instantiate the <code>PicassoBackgroundManagerTarget</code>. Further a default color is set for the background and at last we get the metrics that describe the size and density of this display.
 
     public void prepareBackgroundManager() {
-        BackgroundManager backgroundManager = BackgroundManager.getInstance(mActivity);
-        backgroundManager.attach(mActivity.getWindow());
+        mBackgroundManager = BackgroundManager.getInstance(mActivity);
+        mBackgroundManager.attach(mActivity.getWindow());
 		
-        mBackgroundTarget = new PicassoBackgroundManagerTarget(backgroundManager);
+        mBackgroundTarget = new PicassoBackgroundManagerTarget(mBackgroundManager);
         
-		mDefaultBackground = mActivity.getResources().getDrawable(R.drawable.default_background);
+        mDefaultBackground = mActivity.getResources().getDrawable(R.drawable.default_background);
 		
         mMetrics = new DisplayMetrics();
         mActivity.getWindowManager().getDefaultDisplay().getMetrics(mMetrics);
     }
+    
+    public void release() {
+        mHandler.removeCallbacksAndMessages(null);
+        mBackgroundManager.release();
+    }
 
+Make sure you call the <code>release()</code> method in your activity/fragment <code>onStop()</code> callback.
 
 ### Add a method <code>updateBackground</code> to load an image
 
-We are using Picasso to load and manipulate the image. Once done the instance of the <code>PicassoBackgroundManagerTarget</code> is used to apply the loaded image to the UI. The method also makes sure to cancel the timer to make sure only one timer is running.
+We are using Picasso to load and manipulate the image. Once done the instance of the <code>PicassoBackgroundManagerTarget</code> is used to apply the loaded image to the UI.
 
     protected void updateBackground(String url) {
         Picasso.with(mActivity)
@@ -121,43 +138,28 @@ We are using Picasso to load and manipulate the image. Once done the instance of
                 .transform(BlurTransform.getInstance(mActivity))
                 .error(mDefaultBackground)
                 .into(mBackgroundTarget);
-				
-        if (null != mBackgroundTimer) {
-            mBackgroundTimer.cancel();
-        }
     }
 
 
-### Add an inner class <code>UpdateBackgroundTask</code>
+### Add methods for scheduling background updates
 
-This is a subclass of <code>TimerTask</code> to be used to delay updating the background.
+Since we do not want to keep changing backgrounds while user navigates between the items, we need to
+introduce a slight delay for setting the background drawable. This way the code will not need to load
+images B, C, D when user quickly moves between A, B, C, D, E.
 
-    private class UpdateBackgroundTask extends TimerTask {
-        @Override
-        public void run() {
-            mHandler.post(new Runnable() {
-                @Override
-                public void run() {
-                    if (mBackgroundURL != null) {
-                        updateBackground(mBackgroundURL);
-                    }
-                }
-            });
-        }
+Let's add new method <code>scheduleUpdate</code>:
+
+    private void scheduleUpdate() {
+        mHandler.removeCallbacks(mUpdateBackgroundAction);
+        mHandler.postDelayed(mUpdateBackgroundAction, BACKGROUND_UPDATE_DELAY);
     }
 
-### Create the methods <code>startBackgroundTimer</code>
+And call it from the <code>setBackgroundUrl(String)</code>:
 
-In this method the <code>UpdateBackgroundTask</code> is used to schedule a <code>Timer</code> to update of the background.
-
-    public void startBackgroundTimer() {
-        if (null != mBackgroundTimer) {
-            mBackgroundTimer.cancel();
-        }
-        mBackgroundTimer = new Timer();
-        mBackgroundTimer.schedule(new UpdateBackgroundTask(), BACKGROUND_UPDATE_DELAY);
+    public void setBackgroundUrl(String backgroundUrl) {
+        this.mBackgroundURL = backgroundUrl;
+        scheduleUpdate();
     }
-
 
 ### Create the class <code>BlurTransform</code>
 
@@ -252,7 +254,15 @@ and instantiate it at the end of the <code>init</code> method of the <code>Leanb
 
 	bgHelper = new BackgroundHelper(getActivity());
     bgHelper.prepareBackgroundManager();
-	
+
+and in the <code>onStop()</code> callback release all allocated resources:
+
+    @Override
+    public void onStop() {
+        bgHelper.release();
+        super.onStop();
+    }
+
 
 The BackgroundHelper should be updated each time the user changes the selects an item view. So we create a factory method <code>getDefaultSelectedListener</code> which does that:
 
@@ -286,6 +296,16 @@ and use it in the <code>onCreate</code> method.
 	bgHelper = new BackgroundHelper(getActivity());
 	bgHelper.prepareBackgroundManager();
 	bgHelper.updateBackground(selectedVideo.getThumbUrl());
+
+Again, do not forget to release all resources <code>onStop()</code>:
+
+    @Override
+    public void onStop() {
+        // any other cleanup tasks you may have
+        bgHelper.release();
+        super.onStop();
+    }
+
 
 ### Run the app
 
